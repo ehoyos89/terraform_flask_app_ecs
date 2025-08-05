@@ -88,8 +88,34 @@ resource "aws_ecs_task_definition" "main" {
       ]
       environment = [
         {
-          name  = "DATABASE_URL"
-          value = "mysql+pymysql://${aws_db_instance.main.username}:${aws_secretsmanager_secret_version.db_password.secret_string}@${aws_db_instance.main.address}/${aws_db_instance.main.db_name}"
+          name  = "DATABASE_HOST"
+          value = aws_db_instance.main.address
+        },
+        {
+          name  = "DATABASE_DB_NAME"
+          value = aws_db_instance.main.db_name
+        },
+        {
+          name  = "PHOTOS_BUCKET"
+          value = aws_s3_bucket.photos-bucket.bucket
+        },
+        {
+          name  = "DATABASE_PORT"
+          value = "3306"
+        }
+      ]
+      secrets = [
+        {
+          name      = "DATABASE_USER"
+          valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:username::"
+        },
+        {
+          name      = "DATABASE_PASSWORD"
+          valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:password::"
+        },
+        {
+          name      = "FLASK_SECRET"
+          valueFrom = "${aws_secretsmanager_secret.flask_app_password.arn}:password::"
         }
       ]
       logConfiguration = {
@@ -114,6 +140,7 @@ resource "aws_ecs_service" "main" {
   task_definition = aws_ecs_task_definition.main.arn
   desired_count   = 1
   launch_type     = "FARGATE"
+  enable_execute_command = true
 
   network_configuration {
     subnets         = aws_subnet.private[*].id
