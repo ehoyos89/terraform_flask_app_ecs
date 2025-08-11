@@ -1,8 +1,13 @@
 
-# ------------------------------------------------------------------------------
-# VPC
+# ==============================================================================
+# CONFIGURACIÓN DE LA RED (VPC)
+# ==============================================================================
+# Este archivo define la Virtual Private Cloud (VPC), subredes, gateways y 
+# tablas de enrutamiento que forman la red para la aplicación.
 # ------------------------------------------------------------------------------
 
+# --- Creación de la VPC ---
+# Define la red principal aislada en la nube.
 resource "aws_vpc" "main" {
   cidr_block = var.vpc_cidr
 
@@ -12,9 +17,12 @@ resource "aws_vpc" "main" {
 }
 
 # ------------------------------------------------------------------------------
-# Subnets
+# Subredes
 # ------------------------------------------------------------------------------
 
+# --- Subredes Públicas ---
+# Estas subredes tienen acceso directo a Internet. Aquí se alojará el 
+# Balanceador de Carga (ALB).
 resource "aws_subnet" "public" {
   count             = length(var.public_subnets_cidr)
   vpc_id            = aws_vpc.main.id
@@ -28,6 +36,9 @@ resource "aws_subnet" "public" {
   }
 }
 
+# --- Subredes Privadas ---
+# Estas subredes no tienen acceso directo desde Internet, proporcionando un
+# entorno seguro para los contenedores de la aplicación y la base de datos.
 resource "aws_subnet" "private" {
   count             = length(var.private_subnets_cidr)
   vpc_id            = aws_vpc.main.id
@@ -40,9 +51,11 @@ resource "aws_subnet" "private" {
 }
 
 # ------------------------------------------------------------------------------
-# Internet Gateway
+# Gateways de Red
 # ------------------------------------------------------------------------------
 
+# --- Internet Gateway (IGW) ---
+# Permite la comunicación entre la VPC y el internet.
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
@@ -51,10 +64,9 @@ resource "aws_internet_gateway" "main" {
   }
 }
 
-# ------------------------------------------------------------------------------
-# NAT Gateway
-# ------------------------------------------------------------------------------
-
+# --- NAT Gateway ---
+# Permite a las instancias en subredes privadas iniciar tráfico hacia 
+# Internet (ej. para descargar actualizaciones) sin permitir conexiones entrantes.
 resource "aws_eip" "nat" {
   domain = "vpc"
   depends_on = [aws_internet_gateway.main]
@@ -72,9 +84,11 @@ resource "aws_nat_gateway" "main" {
 }
 
 # ------------------------------------------------------------------------------
-# Route Tables
+# Tablas de Enrutamiento
 # ------------------------------------------------------------------------------
 
+# --- Tabla de Rutas Públicas ---
+# Dirige el tráfico de las subredes públicas hacia el Internet Gateway.
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
 
@@ -94,6 +108,8 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+# --- Tabla de Rutas Privadas ---
+# Dirige el tráfico de las subredes privadas hacia el NAT Gateway.
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
 
@@ -114,9 +130,12 @@ resource "aws_route_table_association" "private" {
 }
 
 # ------------------------------------------------------------------------------
-# Data Sources
+# Orígenes de Datos (Data Sources)
 # ------------------------------------------------------------------------------
 
+# --- Zonas de Disponibilidad ---
+# Obtiene una lista de las zonas de disponibilidad disponibles en la región actual
+# para distribuir los recursos y aumentar la resiliencia.
 data "aws_availability_zones" "available" {
   state = "available"
 }

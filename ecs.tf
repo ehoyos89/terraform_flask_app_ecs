@@ -1,8 +1,14 @@
 
-# ------------------------------------------------------------------------------
-# ECS Cluster
+# ==============================================================================
+# CONFIGURACIÓN DE ECS (ELASTIC CONTAINER SERVICE)
+# ==============================================================================
+# Este archivo define los componentes principales para ejecutar la aplicación
+# contenedorizada, incluyendo el clúster, el balanceador de carga, la 
+# definición de la tarea y el servicio.
 # ------------------------------------------------------------------------------
 
+# --- Clúster de ECS ---
+# Define un clúster de ECS, que es una agrupación lógica de tareas o servicios.
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-cluster"
 
@@ -12,8 +18,10 @@ resource "aws_ecs_cluster" "main" {
 }
 
 # ------------------------------------------------------------------------------
-# Application Load Balancer
+# Balanceador de Carga de Aplicación (ALB)
 # ------------------------------------------------------------------------------
+# El ALB distribuye el tráfico entrante entre las tareas de ECS para asegurar
+# la alta disponibilidad y escalabilidad.
 
 resource "aws_lb" "main" {
   name               = "${var.project_name}-alb"
@@ -27,6 +35,9 @@ resource "aws_lb" "main" {
   }
 }
 
+# --- Grupo de Destino (Target Group) ---
+# Define a dónde debe enviar el tráfico el ALB (en este caso, a las tareas de ECS)
+# y cómo realizar las comprobaciones de estado (health checks).
 resource "aws_lb_target_group" "main" {
   name        = "${var.project_name}-tg"
   port        = 5000
@@ -49,6 +60,9 @@ resource "aws_lb_target_group" "main" {
   }
 }
 
+# --- Receptor (Listener) del ALB ---
+# Escucha el tráfico en un puerto específico (HTTP en el puerto 80) y lo 
+# reenvía al grupo de destino.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
@@ -61,9 +75,13 @@ resource "aws_lb_listener" "http" {
 }
 
 # ------------------------------------------------------------------------------
-# ECS Task Definition and Service
+# Definición de Tarea y Servicio de ECS
 # ------------------------------------------------------------------------------
 
+# --- Definición de Tarea (Task Definition) ---
+# Es el plano para la aplicación. Especifica la imagen de Docker a usar,
+# los recursos de CPU/memoria, los puertos, las variables de entorno y los
+# secretos que necesita el contenedor.
 resource "aws_ecs_task_definition" "main" {
   family                   = "${var.project_name}-task"
   network_mode             = "awsvpc"
@@ -76,7 +94,7 @@ resource "aws_ecs_task_definition" "main" {
   container_definitions = jsonencode([
     {
       name      = "${var.project_name}-container"
-      image     = var.ecr_image_url
+      image     = aws_ecr_repository.app_ecr_repo.repository_url # Apunta al ECR gestionado por el pipeline
       cpu       = 256
       memory    = 512
       essential = true
@@ -134,13 +152,16 @@ resource "aws_ecs_task_definition" "main" {
   }
 }
 
+# --- Servicio de ECS ---
+# Mantiene un número deseado de instancias de la definición de tarea en ejecución.
+# Conecta las tareas a la red, los grupos de seguridad y el balanceador de carga.
 resource "aws_ecs_service" "main" {
   name            = "${var.project_name}-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.main.arn
   desired_count   = 1
   launch_type     = "FARGATE"
-  enable_execute_command = true
+  enable_execute_command = true # Habilita ECS Exec para depuración
 
   network_configuration {
     subnets         = aws_subnet.private[*].id
@@ -160,6 +181,9 @@ resource "aws_ecs_service" "main" {
   }
 }
 
+# --- Grupo de Logs en CloudWatch ---
+# Crea un grupo de logs para que los contenedores de ECS puedan centralizar
+# sus registros de aplicación.
 resource "aws_cloudwatch_log_group" "main" {
   name = "/ecs/${var.project_name}"
 

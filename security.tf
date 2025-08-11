@@ -1,9 +1,17 @@
 
-# ------------------------------------------------------------------------------
-# Security Groups
+# ==============================================================================
+# CONFIGURACIÓN DE SEGURIDAD (GRUPOS DE SEGURIDAD Y ROLES DE IAM)
+# ==============================================================================
+# Este archivo define las reglas de firewall (Security Groups) para controlar
+# el tráfico de red y los roles y políticas de IAM para gestionar los permisos.
 # ------------------------------------------------------------------------------
 
-# Security group for the Application Load Balancer
+# ------------------------------------------------------------------------------
+# Grupos de Seguridad (Security Groups)
+# ------------------------------------------------------------------------------
+
+# --- Grupo de Seguridad para el Balanceador de Carga (ALB) ---
+# Permite el tráfico entrante HTTP (puerto 80) desde cualquier lugar de Internet.
 resource "aws_security_group" "alb" {
   name        = "${var.project_name}-alb-sg"
   description = "Allow HTTP traffic to ALB"
@@ -29,7 +37,9 @@ resource "aws_security_group" "alb" {
   }
 }
 
-# Security group for the ECS tasks
+# --- Grupo de Seguridad para las Tareas de ECS ---
+# Permite el tráfico entrante solo desde el ALB hacia el puerto 5000 de la 
+# aplicación Flask.
 resource "aws_security_group" "ecs_tasks" {
   name        = "${var.project_name}-ecs-tasks-sg"
   description = "Allow traffic from ALB to ECS tasks"
@@ -37,7 +47,7 @@ resource "aws_security_group" "ecs_tasks" {
 
   ingress {
     description     = "Allow traffic from ALB"
-    from_port       = 5000 # Assuming Flask app runs on port 5000
+    from_port       = 5000 # Puerto de la aplicación Flask
     to_port         = 5000
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
@@ -55,7 +65,9 @@ resource "aws_security_group" "ecs_tasks" {
   }
 }
 
-# Security group for the RDS instance
+# --- Grupo de Seguridad para la Base de Datos (RDS) ---
+# Permite el tráfico entrante en el puerto de MySQL (3306) solo desde las
+# tareas de ECS.
 resource "aws_security_group" "rds" {
   name        = "${var.project_name}-rds-sg"
   description = "Allow traffic from ECS tasks to RDS"
@@ -82,10 +94,12 @@ resource "aws_security_group" "rds" {
 }
 
 # ------------------------------------------------------------------------------
-# IAM Roles
+# Roles y Políticas de IAM (Identity and Access Management)
 # ------------------------------------------------------------------------------
 
-# IAM role for ECS task execution
+# --- Rol de Ejecución de Tareas de ECS ---
+# Rol que asume el agente de ECS para realizar acciones en nombre del usuario,
+# como descargar imágenes de ECR y obtener secretos de Secrets Manager.
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "${var.project_name}-ecs-task-execution-role"
 
@@ -107,15 +121,18 @@ resource "aws_iam_role" "ecs_task_execution_role" {
   }
 }
 
+# Asocia la política gestionada por AWS para la ejecución de tareas de ECS.
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Política para permitir que las tareas de ECS accedan a los secretos
+# --- Política de Acceso a Secretos ---
+# Define permisos explícitos para que las tareas de ECS puedan leer los secretos
+# (credenciales de BD, claves de la app) desde AWS Secrets Manager.
 resource "aws_iam_policy" "ecs_secrets_policy" {
   name        = "${var.project_name}-ecs-secrets-policy"
-  description = "Allow ECS tasks to access secrets"
+  description = "Permitir a las tareas de ECS acceder a los secretos"
 
   policy = jsonencode({
     Version = "2012-10-17",
@@ -134,16 +151,18 @@ resource "aws_iam_policy" "ecs_secrets_policy" {
   })
 }
 
-# Adjunta la política de secretos al rol de ejecución de tareas de ECS
+# Asocia la política de secretos al rol de ejecución de tareas.
 resource "aws_iam_role_policy_attachment" "ecs_secrets_attachment" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = aws_iam_policy.ecs_secrets_policy.arn
 }
 
-# Política para permitir que las tareas de ECS accedan a S3
+# --- Política de Acceso a S3 ---
+# Define permisos para que la aplicación pueda leer y escribir objetos en el
+# bucket S3 designado.
 resource "aws_iam_policy" "ecs_s3_policy" {
   name        = "${var.project_name}-ecs-s3-policy"
-  description = "Allow ECS tasks to access the S3 bucket"
+  description = "Permitir a las tareas de ECS acceder al bucket S3"
 
   policy = jsonencode({
     Version = "2012-10-17",
@@ -161,16 +180,18 @@ resource "aws_iam_policy" "ecs_s3_policy" {
   })
 }
 
-# Adjunta la política de S3 al rol de tareas de ECS
+# Asocia la política de S3 al rol de la tarea.
 resource "aws_iam_role_policy_attachment" "ecs_s3_attachment" {
   role       = aws_iam_role.ecs_task_role.name
   policy_arn = aws_iam_policy.ecs_s3_policy.arn
 }
 
-# Política para permitir ECS Exec
+# --- Política para ECS Exec ---
+# Permite la funcionalidad de 'ECS Exec' para obtener un shell dentro de un
+# contenedor en ejecución, útil para depuración.
 resource "aws_iam_policy" "ecs_exec_policy" {
   name        = "${var.project_name}-ecs-exec-policy"
-  description = "Allow ECS Exec functionality"
+  description = "Permitir la funcionalidad de ECS Exec"
 
   policy = jsonencode({
     Version = "2012-10-17",
@@ -189,13 +210,15 @@ resource "aws_iam_policy" "ecs_exec_policy" {
   })
 }
 
-# Adjunta la política de ECS Exec al rol de tareas de ECS
+# Asocia la política de ECS Exec al rol de la tarea.
 resource "aws_iam_role_policy_attachment" "ecs_exec_attachment" {
   role       = aws_iam_role.ecs_task_role.name
   policy_arn = aws_iam_policy.ecs_exec_policy.arn
 }
 
-# IAM role for the application running in the ECS task (optional, but good practice)
+# --- Rol de Tarea de ECS ---
+# Rol que asume la aplicación dentro del contenedor. Es una buena práctica 
+# separar los permisos de la aplicación de los permisos de ejecución del agente ECS.
 resource "aws_iam_role" "ecs_task_role" {
   name = "${var.project_name}-ecs-task-role"
 

@@ -1,8 +1,13 @@
 
-# ------------------------------------------------------------------------------
-# RDS
+# ==============================================================================
+# CONFIGURACIÓN DE LA BASE DE DATOS (RDS)
+# ==============================================================================
+# Este archivo define la instancia de la base de datos MySQL, su configuración
+# de red y una tarea de inicialización para crear el esquema y las tablas.
 # ------------------------------------------------------------------------------
 
+# --- Grupo de Subredes para la Base de Datos ---
+# Define en qué subredes privadas puede operar la instancia de RDS.
 resource "aws_db_subnet_group" "main" {
   name       = "${var.project_name}-db-subnet-group"
   subnet_ids = aws_subnet.private[*].id
@@ -12,6 +17,9 @@ resource "aws_db_subnet_group" "main" {
   }
 }
 
+# --- Instancia de la Base de Datos RDS ---
+# Crea la instancia de MySQL con la configuración especificada (almacenamiento,
+# tipo de instancia, credenciales, etc.).
 resource "aws_db_instance" "main" {
   identifier           = "${var.project_name}-db"
   allocated_storage    = 20
@@ -36,7 +44,13 @@ resource "aws_db_instance" "main" {
   }
 }
 
-# ECS Task Definition for database initialization
+# ------------------------------------------------------------------------------
+# Inicialización de la Base de Datos
+# ------------------------------------------------------------------------------
+# Esta sección define y ejecuta una tarea de ECS única que se conecta a la base
+# de datos recién creada para inicializar el esquema y las tablas necesarias.
+
+# --- Definición de Tarea ECS para Inicialización de BD ---
 resource "aws_ecs_task_definition" "db_init" {
   family                   = "${var.project_name}-db-init-task"
   network_mode             = "awsvpc"
@@ -49,7 +63,7 @@ resource "aws_ecs_task_definition" "db_init" {
   container_definitions = jsonencode([
     {
       name      = "${var.project_name}-db-init-container"
-      image     = "mysql:8.0"
+      image     = "mysql:8.0" # Usa una imagen de MySQL para tener el cliente
       essential = true
       
       environment = [
@@ -74,6 +88,7 @@ resource "aws_ecs_task_definition" "db_init" {
         }
       ]
 
+      # Comando que se ejecuta dentro del contenedor para crear la BD y la tabla.
       command = [
         "/bin/sh",
         "-c",
@@ -96,7 +111,7 @@ resource "aws_ecs_task_definition" "db_init" {
   }
 }
 
-# CloudWatch Log Group for database initialization
+# --- Grupo de Logs para la Tarea de Inicialización ---
 resource "aws_cloudwatch_log_group" "db_init" {
   name = "/ecs/${var.project_name}-db-init"
 
@@ -105,7 +120,10 @@ resource "aws_cloudwatch_log_group" "db_init" {
   }
 }
 
-# NULL resource to run the database initialization ECS task
+# --- Recurso Nulo para Orquestar la Inicialización ---
+# Utiliza un provisioner 'local-exec' para ejecutar comandos de la CLI de AWS.
+# Esto asegura que la tarea de inicialización se ejecute solo después de que la
+# instancia de RDS esté disponible.
 resource "null_resource" "database_initialization" {
   depends_on = [ 
     aws_db_instance.main,
@@ -113,18 +131,17 @@ resource "null_resource" "database_initialization" {
     aws_cloudwatch_log_group.db_init
   ]
 
-  # Triggers que refuerzan la re-ejecución
   triggers = {
     db_instance_identifier = aws_db_instance.main.identifier
     task_definition_arn = aws_ecs_task_definition.db_init.arn
   }
 
-  # Provisioner para esperar a que RDS esté disponible
+  # Espera a que la instancia de RDS esté completamente disponible.
   provisioner "local-exec" {
     command = "aws rds wait db-instance-available --db-instance-identifier ${aws_db_instance.main.identifier}"
   }
   
-  # Provisioner para ejecutar la tarea de inicialización
+  # Ejecuta la tarea de ECS para inicializar la base de datos.
   provisioner "local-exec" {
     command = <<-EOT
       aws ecs run-task \
