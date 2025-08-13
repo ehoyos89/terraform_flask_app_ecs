@@ -1,114 +1,136 @@
-# Proyecto de Despliegue de Aplicación Flask en AWS con Terraform
+# Infraestructura como Código para Aplicación Flask en AWS ECS Fargate
 
-Este proyecto contiene el código de infraestructura como código (IaC) utilizando Terraform para aprovisionar y desplegar una aplicación web Flask en Amazon Web Services (AWS). La arquitectura está diseñada siguiendo las mejores prácticas de seguridad y escalabilidad, utilizando servicios administrados para minimizar la sobrecarga operativa.
+## 1. Resumen Técnico
 
-Este proyecto asume que **ya has construido tu imagen de contenedor de la aplicación y la has subido a un repositorio de Amazon ECR existente**.
+Este proyecto utiliza Terraform para aprovisionar una arquitectura robusta y escalable en AWS para el despliegue de una aplicación web contenedorizada (Flask). La infraestructura se gestiona completamente como código, implementando las mejores prácticas de seguridad, alta disponibilidad y automatización de CI/CD.
 
-## Arquitectura
+La arquitectura resultante consiste en una aplicación serverless ejecutándose en **AWS Fargate**, dentro de una red privada, con una base de datos relacional **RDS (MySQL)** y un pipeline de **AWS CodePipeline** que automatiza el ciclo de vida de desarrollo desde el commit hasta el despliegue.
 
-La infraestructura creada por este proyecto de Terraform consta de los siguientes componentes:
+## 2. Arquitectura Detallada
 
-1.  **Red (VPC):**
-    *   Una **Virtual Private Cloud (VPC)** para aislar los recursos de la red.
-    *   **Subredes Públicas y Privadas** en dos zonas de disponibilidad para alta disponibilidad.
-    *   Un **Internet Gateway** para permitir el acceso a Internet a los recursos en las subredes públicas.
-    *   Un **NAT Gateway** para permitir que los recursos en las subredes privadas (como los contenedores de ECS) inicien conexiones a Internet sin estar expuestos directamente.
+### 2.1. Red (VPC)
 
-2.  **Contenedores (ECS):**
-    *   **Amazon Elastic Container Service (ECS) con Fargate:** Un clúster de ECS para orquestar la ejecución de los contenedores de la aplicación. Se utiliza el tipo de lanzamiento Fargate para una experiencia sin servidor, eliminando la necesidad de gestionar instancias EC2.
-    *   **Definición de Tarea y Servicio de ECS:** Definen cómo se debe ejecutar la aplicación, incluyendo la URL de la imagen a usar, los recursos de CPU/memoria, y la configuración de red. El servicio se encarga de mantener el número deseado de tareas en ejecución.
+- **VPC**: Se crea una VPC con un CIDR block configurable (default: `10.0.0.0/16`).
+- **Subredes**: La VPC se distribuye en dos Zonas de Disponibilidad (AZs) para alta disponibilidad.
+  - **2 Subredes Públicas**: Alojan el Application Load Balancer y el NAT Gateway. Tienen una ruta directa al Internet Gateway.
+  - **2 Subredes Privadas**: Alojan las tareas de ECS Fargate y la instancia de RDS, garantizando que no sean accesibles directamente desde Internet.
+- **Gateways**:
+  - **Internet Gateway (IGW)**: Provee acceso a Internet a las subredes públicas.
+  - **NAT Gateway**: Se aprovisiona con una IP Elástica en una de las subredes públicas. Permite a los recursos en las subredes privadas (ej. tareas de ECS) iniciar conexiones salientes a Internet (ej. para consumir APIs o descargar dependencias) sin exponerlos a conexiones entrantes.
+- **Enrutamiento**: Se configuran tablas de rutas para dirigir el tráfico `0.0.0.0/0` de las subredes públicas al IGW y el de las privadas al NAT Gateway.
 
-3.  **Base de Datos (RDS):**
-    *   **Amazon Relational Database Service (RDS):** Una instancia de base de datos MySQL administrada, desplegada en las subredes privadas para mayor seguridad.
-    *   **AWS Secrets Manager:** Para almacenar de forma segura la contraseña de la base de datos y pasarla a la aplicación sin exponerla en el código.
+### 2.2. Computación (ECS Fargate)
 
-4.  **Seguridad y Redireccionamiento:**
-    *   **Application Load Balancer (ALB):** Un balanceador de carga que distribuye el tráfico HTTP entrante a las tareas de ECS.
-    *   **Grupos de Seguridad:** Reglas de firewall detalladas que controlan el tráfico entre el ALB, los contenedores de ECS y la base de datos RDS, siguiendo el principio de mínimo privilegio.
-    *   **Roles de IAM:** Permisos específicos para que los servicios de ECS puedan interactuar con otros servicios de AWS (como ECR y CloudWatch) de forma segura.
+- **ECS Cluster**: Un clúster lógico que agrupa los servicios y tareas de la aplicación.
+- **Application Load Balancer (ALB)**:
+  - Se despliega en las subredes públicas.
+  - Un *listener* en el puerto 80 (HTTP) redirige el tráfico a un *target group*.
+  - El *target group* apunta a las IPs de las tareas de Fargate en el puerto 5000 y realiza *health checks* en la ruta `/`.
+- **ECS Task Definition**:
+  - **Launch Type**: `FARGATE`, eliminando la necesidad de gestionar instancias EC2.
+  - **CPU/Memoria**: Configurable (default: 256 CPU units / 512 MiB Memory).
+  - **Container Definition**:
+    - **Imagen**: Obtenida del repositorio ECR gestionado por el pipeline (`aws_ecr_repository.app_ecr_repo`).
+    - **Variables de Entorno**: Se inyectan el `DATABASE_HOST` (endpoint de RDS), `DATABASE_DB_NAME` y `PHOTOS_BUCKET`.
+    - **Gestión de Secretos**: Las credenciales de la base de datos (`DATABASE_USER`, `DATABASE_PASSWORD`) y la `FLASK_SECRET` se inyectan de forma segura desde **AWS Secrets Manager**, evitando la exposición de datos sensibles.
+    - **Logging**: Los logs del contenedor se centralizan en un grupo de **CloudWatch Logs** (`/ecs/project-name`).
+- **ECS Service**:
+  - Mantiene el número deseado de tareas (default: 1).
+  - Asocia las tareas con el ALB y asegura que se registren en el *target group*.
+  - Despliega las tareas en las subredes privadas.
+  - **ECS Exec** está habilitado (`enable_execute_command = true`) para permitir la depuración mediante un shell interactivo dentro del contenedor.
 
-## Requisitos Previos
+### 2.3. Base de Datos (RDS)
 
-Antes de comenzar, asegúrate de tener instaladas las siguientes herramientas:
+- **Instancia**: Se aprovisiona una instancia `db.t4g.micro` con motor **MySQL 8.0**.
+- **Almacenamiento**: `gp3` con cifrado en reposo (`storage_encrypted = true`).
+- **Red**: La instancia se despliega en un `DB Subnet Group` que abarca las subredes privadas.
+- **Gestión de Credenciales**: La contraseña maestra se genera aleatoriamente (`random_password`) y se almacena en **AWS Secrets Manager**. La configuración de la instancia de RDS y la definición de tarea de ECS referencian este secreto.
+- **Inicialización de Esquema**: Se utiliza un `null_resource` con un provisioner `local-exec` para orquestar una tarea de ECS (`db_init`) de un solo uso. Esta tarea se ejecuta post-aprovisionamiento de RDS, utilizando una imagen `mysql:8.0` para ejecutar el script `init.sql` y crear el esquema inicial de la base de datos.
 
-*   **Terraform:** [Guía de instalación oficial](https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli)
-*   **AWS CLI:** [Guía de instalación oficial](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
-*   **Docker:** [Guía de instalación oficial](https://docs.docker.com/engine/install/)
+### 2.4. Almacenamiento (S3)
 
-También necesitarás configurar tus credenciales de AWS para que Terraform y la AWS CLI puedan interactuar con tu cuenta.
+- **Bucket S3**: Se crea un bucket para uso de la aplicación (ej. almacenamiento de imágenes). El nombre se genera con un sufijo aleatorio (`random_id`) para garantizar unicidad global.
+- **Seguridad**: El acceso público está explícitamente bloqueado a nivel de bucket (`aws_s3_bucket_public_access_block`).
 
-## Cómo Usar este Proyecto
+### 2.5. Seguridad (IAM y Security Groups)
 
-Sigue estos pasos para desplegar la infraestructura y la aplicación:
+- **Security Groups (Firewall)**:
+  - **ALB SG**: Permite tráfico entrante en el puerto 80/TCP desde `0.0.0.0/0`.
+  - **ECS Tasks SG**: Permite tráfico entrante en el puerto 5000/TCP únicamente desde el Security Group del ALB.
+  - **RDS SG**: Permite tráfico entrante en el puerto 3306/TCP únicamente desde el Security Group de las tareas de ECS.
+- **Roles de IAM (Principio de Mínimo Privilegio)**:
+  - **ECSTaskExecutionRole**: Rol estándar para el agente de ECS, con políticas para extraer imágenes de ECR y leer secretos de Secrets Manager. Se adjunta una política en línea para acceder a los secretos específicos del proyecto.
+  - **ECSTaskRole**: Rol para la aplicación. Se le otorgan permisos explícitos para `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` en el bucket de la aplicación y permisos para la funcionalidad de ECS Exec.
 
-### 1. Construir y Subir la Imagen Docker a ECR (Paso Previo)
+### 2.6. CI/CD Pipeline (AWS CodePipeline)
 
-Este proyecto asume que ya tienes una imagen de tu aplicación en un repositorio de ECR. Si no es así, sigue estos pasos:
+- **ECR Repository**: Se crea un repositorio para almacenar las imágenes Docker de la aplicación. El escaneo de vulnerabilidades al subir una imagen está activado (`scan_on_push = true`).
+- **CodeStar Connection**: Se define una conexión a un repositorio de GitHub. Requiere una única configuración manual en la consola de AWS tras el primer despliegue.
+- **Pipeline Stages**:
+  1.  **Source**: Se activa automáticamente ante un `push` a la rama `main` del repositorio conectado.
+  2.  **Build**: Utiliza **AWS CodeBuild** con un entorno `standard:7.0` en modo privilegiado para la construcción de imágenes Docker. El proceso se define en un archivo `buildspec.yml` (no incluido en este repo), que debe encargarse de:
+      - Autenticarse en ECR.
+      - Construir y etiquetar la imagen Docker.
+      - Subir la imagen a ECR.
+      - Generar un artefacto `imagedefinitions.json` para la etapa de despliegue.
+  3.  **Deploy**: Utiliza la acción nativa de ECS para actualizar el servicio con la nueva definición de imagen contenida en el artefacto de la etapa de Build.
+- **IAM Roles**: Se crean roles específicos para CodePipeline y CodeBuild con permisos acotados para sus respectivas funciones.
 
-1.  **Crea un repositorio en ECR** a través de la consola de AWS o la AWS CLI.
-2.  **Construye tu imagen Docker:**
-    ```bash
-    docker build -t <nombre-de-tu-repo-ecr>:latest .
+## 3. Uso y Despliegue
+
+### 3.1. Prerrequisitos
+
+- **Terraform** (~> 5.0)
+- **AWS CLI**
+- **Docker** (para desarrollo local)
+- Credenciales de AWS configuradas.
+
+### 3.2. Configuración
+
+1.  Clonar el repositorio.
+2.  Crear un archivo `terraform.tfvars` para definir las variables de entrada. Como mínimo, se deben configurar las variables marcadas como `sensitive` en `variables.tf`.
+
+    ```hcl
+    # Ejemplo de terraform.tfvars
+    aws_region  = "us-east-1"
+    project_name = "mi-proyecto-flask"
+    db_name      = "flaskdb"
+    db_username  = "admin"
     ```
-3.  **Autentica Docker en ECR:**
+
+### 3.3. Comandos de Despliegue
+
+1.  **Inicializar Terraform**:
     ```bash
-    aws ecr get-login-password --region <tu-region> | docker login --username AWS --password-stdin <tu-id-de-cuenta>.dkr.ecr.<tu-region>.amazonaws.com
+    terraform init
     ```
-4.  **Sube la imagen a ECR:**
+2.  **Planificar Cambios**:
     ```bash
-    docker push <nombre-de-tu-repo-ecr>:latest
+    terraform plan
     ```
-5.  **Copia la URI de la imagen.** La necesitarás en el siguiente paso.
+3.  **Aplicar Infraestructura**:
+    ```bash
+    terraform apply
+    ```
 
-### 2. Inicializar Terraform
+### 3.4. Configuración Post-Despliegue
 
-Navega al directorio raíz del proyecto y ejecuta `terraform init` para descargar los proveedores necesarios.
+- **Conexión de CI/CD**: Navegar a **AWS CodePipeline** en la consola, localizar el pipeline creado y completar el handshake de la conexión de CodeStar con el repositorio de GitHub.
+- **Repositorio de Aplicación**: Asegurarse de que el repositorio de la aplicación contiene un `Dockerfile` y un `buildspec.yml` compatibles con el pipeline.
 
-```bash
-terraform init
-```
+### 3.5. Salidas (Outputs)
 
-### 3. Configurar Variables
+Una vez completado el despliegue, Terraform mostrará las siguientes salidas:
 
-Edita el archivo `terraform.tfvars` para personalizar las variables del proyecto. Deberás proporcionar la URL completa de tu imagen de ECR y una contraseña para la base de datos.
+- `alb_dns_name`: La URL para acceder a la aplicación.
+- `rds_endpoint`: El endpoint de la base de datos RDS.
+- `s3_bucket_name`: El nombre del bucket S3 creado.
 
-```hcl
-aws_region    = "us-east-1"
-project_name  = "ecs-flask-app"
-db_password   = "tu-contraseña-segura"
-ecr_image_url = "<tu-id-de-cuenta>.dkr.ecr.<tu-region>.amazonaws.com/<nombre-de-tu-repo-ecr>:latest"
-```
+### 3.6. Destrucción de la Infraestructura
 
-### 4. Planificar y Aplicar la Infraestructura
-
-Primero, ejecuta `terraform plan` para ver los recursos que se crearán.
-
-```bash
-terraform plan
-```
-
-Si el plan es correcto, ejecuta `terraform apply` para crear la infraestructura en AWS. Se te pedirá que confirmes la acción.
-
-```bash
-terraform apply
-```
-
-### 5. Acceder a la Aplicación
-
-Una vez que Terraform termine, el servicio de ECS descargará tu imagen de ECR y la ejecutará automáticamente. Puedes acceder a tu aplicación a través del DNS del balanceador de carga, que puedes obtener de las salidas de Terraform:
-
-```bash
-terraform output alb_dns_name
-```
-
-Pega la URL en tu navegador y deberías ver el mensaje de bienvenida de la aplicación Flask.
-
-## Limpieza
-
-Para destruir toda la infraestructura y evitar costos adicionales, ejecuta el siguiente comando:
+Para eliminar todos los recursos aprovisionados y evitar costos, ejecutar:
 
 ```bash
 terraform destroy
 ```
-
-Se te pedirá que confirmes la acción. Una vez confirmada, Terraform eliminará todos los recursos creados.

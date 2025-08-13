@@ -1,4 +1,3 @@
-
 # ==============================================================================
 # CONFIGURACIÓN DE CI/CD (CONTINUOUS INTEGRATION/CONTINUOUS DEPLOYMENT)
 # ==============================================================================
@@ -105,7 +104,11 @@ resource "aws_iam_policy" "codepipeline_policy" {
           "ecs:UpdateService",
           "ecs:RegisterTaskDefinition"
         ],
-        Resource = "*"
+        Resource = [
+          "arn:aws:ecs:${var.aws_region}:*:cluster/${aws_ecs_cluster.main.name}",
+          "arn:aws:ecs:${var.aws_region}:*:service/${aws_ecs_cluster.main.name}/${aws_ecs_service.main.name}",
+          "arn:aws:ecs:${var.aws_region}:*:task-definition/${aws_ecs_task_definition.main.family}:*"
+        ]
       },
       {
         Effect = "Allow",
@@ -234,7 +237,7 @@ resource "aws_codebuild_project" "app_build" {
 
   environment {
     compute_type                = "BUILD_GENERAL1_SMALL"
-    image                       = "aws/codebuild/standard:5.0"
+    image                       = "aws/codebuild/standard:7.0"
     type                        = "LINUX_CONTAINER"
     privileged_mode             = true # Requerido para construir imágenes Docker
     image_pull_credentials_type = "CODEBUILD"
@@ -331,4 +334,49 @@ resource "aws_codepipeline" "app_pipeline" {
       }
     }
   }
+  trigger {
+    provider_type = "CodeStarSourceConnection"
+    
+    git_configuration {
+      source_action_name = "Source"  # Debe coincidir con el nombre de tu action Source
+      
+      # Desencadenador para push a rama main
+      push {
+        branches {
+          includes = ["main"]
+        }
+        
+        # OPCIONAL: Filtrar por archivos específicos
+        # Descomenta las siguientes líneas si quieres que solo ciertos cambios disparen el pipeline
+        # file_paths {
+        #   includes = [
+        #     "src/**",           # Cambios en código fuente
+        #     "Dockerfile",       # Cambios en Docker
+        #     "requirements.txt", # Cambios en dependencias
+        #     "buildspec.yml"     # Cambios en build
+        #   ]
+        # }
+      }
+
+      # OPCIONAL: Desencadenador para Pull Requests
+      # Descomenta si quieres que también se ejecute en PRs
+      # pull_request {
+      #   events = ["OPEN", "UPDATED"]
+      #   branches {
+      #     includes = ["main"]
+      #   }
+      # }
+    }
+  }
+
+  # Tags (actualizados - removido el tag ForceWebhook que no servía)
+  tags = {
+    Name    = "${var.project_name}-pipeline"
+    Project = var.project_name
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "codepipeline_ecs_full_access" {
+  role       = aws_iam_role.codepipeline_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
 }
